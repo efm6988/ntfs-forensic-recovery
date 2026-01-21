@@ -1,0 +1,140 @@
+
+name: Build Windows App (Portable + Installer)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      APP_NAME: NTFSForensicRecovery
+      PYTHON_VERSION: '3.11'   # If pytsk3 wheel fails, try '3.10' or '3.9'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install build dependencies
+        shell: cmd
+        run: |
+          python -m pip install --upgrade pip
+          if exist requirements.txt (pip install -r requirements.txt)
+          pip install pyinstaller
+
+      # -------- Build Portable: One-Folder (recommended) --------
+      - name: Build one-folder (GUI)
+        shell: cmd
+        run: |
+          if exist assets\app.ico (
+            pyinstaller --noconfirm --windowed --name "%APP_NAME%" ^
+              --icon assets\app.ico ^
+              --collect-all pytsk3 ^
+              --distpath dist\onefolder ^
+              main.py
+          ) else (
+            pyinstaller --noconfirm --windowed --name "%APP_NAME%" ^
+              --collect-all pytsk3 ^
+              --distpath dist\onefolder ^
+              main.py
+          )
+
+      - name: Zip one-folder portable
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\onefolder\${{ env.APP_NAME }}\*" -DestinationPath "dist\${{ env.APP_NAME }}-portable-onefolder.zip"
+
+      - name: Upload one-folder portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-onefolder
+          path: dist/${{ env.APP_NAME }}-portable-onefolder.zip
+          retention-days: 14
+
+      # -------- Build Portable: One-File (optional) --------
+      - name: Build one-file (GUI)
+        shell: cmd
+        run: |
+          if exist assets\app.ico (
+            pyinstaller --noconfirm --onefile --windowed --name "%APP_NAME%" ^
+              --icon assets\app.ico ^
+              --collect-all pytsk3 ^
+              --distpath dist\onefile ^
+              main.py
+          ) else (
+            pyinstaller --noconfirm --onefile --windowed --name "%APP_NAME%" ^
+              --collect-all pytsk3 ^
+              --distpath dist\onefile ^
+              main.py
+          )
+
+      - name: Upload one-file portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-onefile
+          path: dist/onefile/*.exe
+          retention-days: 14
+
+      # -------- Build Windows Installer using Inno Setup (optional) --------
+      - name: Install Inno Setup
+        run: choco install innosetup --yes
+        shell: powershell
+
+      - name: Create Inno Setup script
+        shell: powershell
+        run: |
+          $script = @"
+          [Setup]
+          AppName=${{ env.APP_NAME }}
+          AppVersion=1.0.0
+          DefaultDirName={pf}\${{ env.APP_NAME }}
+          DisableDirPage=no
+          DefaultGroupName=${{ env.APP_NAME }}
+          OutputDir=dist\installer
+          OutputBaseFilename=${{ env.APP_NAME }}-Setup
+          Compression=lzma
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64
+          DisableProgramGroupPage=no
+          SetupIconFile=assets\app.ico
+          UninstallDisplayIcon={app}\${{ env.APP_NAME }}.exe
+
+          [Files]
+          Source: "dist\onefolder\${{ env.APP_NAME }}\*"; DestDir: "{app}"; Flags: recursesubdirs
+
+          [Icons]
+          Name: "{group}\${{ env.APP_NAME }}"; Filename: "{app}\${{ env.APP_NAME }}.exe"; IconFilename: "{app}\${{ env.APP_NAME }}.exe"
+          Name: "{commondesktop}\${{ env.APP_NAME }}"; Filename: "{app}\${{ env.APP_NAME }}.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+          "@
+          Set-Content -Path installer.iss -Value $script -Encoding ASCII
+
+      - name: Build installer
+        shell: powershell
+        run: |
+          iscc installer.iss
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: dist/installer/*.exe
+          retention-days: 14
