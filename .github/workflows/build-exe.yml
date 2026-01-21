@@ -1,4 +1,3 @@
-
 name: Build Windows App (Portable + Installer)
 
 on:
@@ -43,16 +42,7 @@ jobs:
 
       - name: Verify pytsk3 import
         shell: cmd
-        run: |
-          python - <<^PY^
-          import sys
-          try:
-              import pytsk3
-              print("pytsk3 import OK")
-          except Exception as e:
-              print("pytsk3 import FAILED:", e)
-              sys.exit(1)
-          ^PY^
+        run: python -c "import pytsk3; print('pytsk3 import OK')"
 
       - name: Prepare a guaranteed-valid icon
         shell: python
@@ -62,7 +52,6 @@ jobs:
           os.makedirs('build', exist_ok=True)
           target = os.path.join('build', 'valid_app.ico')
 
-          # Try to use repo-provided icon/images if present; otherwise generate a placeholder
           candidates = [
               os.path.join('assets', 'app.ico'),
               os.path.join('assets', 'app.png'),
@@ -83,7 +72,7 @@ jobs:
 
           if img is None:
               # Create a simple blue placeholder icon
-              img = Image.new('RGBA', (256, 256), (12, 78, 164, 255))  # Microsoft blue-ish
+              img = Image.new('RGBA', (256, 256), (12, 78, 164, 255))
               src_used = 'GENERATED'
 
           sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
