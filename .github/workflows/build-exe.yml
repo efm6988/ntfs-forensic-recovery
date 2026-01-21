@@ -12,7 +12,7 @@ jobs:
 
     env:
       APP_NAME: NTFSForensicRecovery
-      PYTHON_VERSION: '3.11'   # If pytsk3 wheel fails, try '3.10' or '3.9'
+      PYTHON_VERSION: '3.10'   # pytsk3 wheels are most reliable on 3.10
 
     steps:
       - name: Checkout code
@@ -35,30 +35,76 @@ jobs:
         shell: cmd
         run: |
           python -m pip install --upgrade pip
-          if exist requirements.txt (pip install -r requirements.txt)
-          pip install pyinstaller
+          if exist requirements.txt (
+            rem Prefer wheels first; fallback to source if needed
+            pip install --only-binary=:all: -r requirements.txt || pip install -r requirements.txt
+          )
+          pip install pyinstaller Pillow
+
+      - name: Verify pytsk3 import
+        shell: cmd
+        run: |
+          python - <<^PY^
+          import sys
+          try:
+              import pytsk3
+              print("pytsk3 import OK")
+          except Exception as e:
+              print("pytsk3 import FAILED:", e)
+              sys.exit(1)
+          ^PY^
+
+      - name: Prepare a guaranteed-valid icon
+        shell: python
+        run: |
+          import os
+          from PIL import Image
+          os.makedirs('build', exist_ok=True)
+          target = os.path.join('build', 'valid_app.ico')
+
+          # Try to use repo-provided icon/images if present; otherwise generate a placeholder
+          candidates = [
+              os.path.join('assets', 'app.ico'),
+              os.path.join('assets', 'app.png'),
+              os.path.join('assets', 'app.jpg'),
+              os.path.join('assets', 'app.jpeg'),
+          ]
+
+          img = None
+          src_used = None
+          for c in candidates:
+              if os.path.exists(c):
+                  try:
+                      img = Image.open(c).convert('RGBA')
+                      src_used = c
+                      break
+                  except Exception:
+                      img = None
+
+          if img is None:
+              # Create a simple blue placeholder icon
+              img = Image.new('RGBA', (256, 256), (12, 78, 164, 255))  # Microsoft blue-ish
+              src_used = 'GENERATED'
+
+          sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+          img.save(target, sizes=sizes)
+          print("Icon prepared at:", target, "| Source:", src_used)
 
       # -------- Build Portable: One-Folder (recommended) --------
       - name: Build one-folder (GUI)
         shell: cmd
         run: |
-          if exist assets\app.ico (
-            pyinstaller --noconfirm --windowed --name "%APP_NAME%" ^
-              --icon assets\app.ico ^
-              --collect-all pytsk3 ^
-              --distpath dist\onefolder ^
-              main.py
-          ) else (
-            pyinstaller --noconfirm --windowed --name "%APP_NAME%" ^
-              --collect-all pytsk3 ^
-              --distpath dist\onefolder ^
-              main.py
-          )
+          pyinstaller --noconfirm --windowed --name "%APP_NAME%" ^
+            --icon build\valid_app.ico ^
+            --collect-all pytsk3 ^
+            --distpath dist\onefolder ^
+            main.py
 
       - name: Zip one-folder portable
         shell: powershell
         run: |
           Compress-Archive -Path "dist\onefolder\${{ env.APP_NAME }}\*" -DestinationPath "dist\${{ env.APP_NAME }}-portable-onefolder.zip"
+          Get-ChildItem dist -Recurse
 
       - name: Upload one-folder portable
         uses: actions/upload-artifact@v4
@@ -70,22 +116,17 @@ jobs:
       # -------- Build Portable: One-File (optional) --------
       - name: Build one-file (GUI)
         shell: cmd
+        continue-on-error: true
         run: |
-          if exist assets\app.ico (
-            pyinstaller --noconfirm --onefile --windowed --name "%APP_NAME%" ^
-              --icon assets\app.ico ^
-              --collect-all pytsk3 ^
-              --distpath dist\onefile ^
-              main.py
-          ) else (
-            pyinstaller --noconfirm --onefile --windowed --name "%APP_NAME%" ^
-              --collect-all pytsk3 ^
-              --distpath dist\onefile ^
-              main.py
-          )
+          pyinstaller --noconfirm --onefile --windowed --name "%APP_NAME%" ^
+            --icon build\valid_app.ico ^
+            --collect-all pytsk3 ^
+            --distpath dist\onefile ^
+            main.py
 
       - name: Upload one-file portable
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: portable-onefile
           path: dist/onefile/*.exe
@@ -93,11 +134,13 @@ jobs:
 
       # -------- Build Windows Installer using Inno Setup (optional) --------
       - name: Install Inno Setup
-        run: choco install innosetup --yes
         shell: powershell
+        continue-on-error: true
+        run: choco install innosetup --yes
 
       - name: Create Inno Setup script
         shell: powershell
+        continue-on-error: true
         run: |
           $script = @"
           [Setup]
@@ -112,14 +155,14 @@ jobs:
           SolidCompression=yes
           ArchitecturesInstallIn64BitMode=x64
           DisableProgramGroupPage=no
-          SetupIconFile=assets\app.ico
+          SetupIconFile=build\valid_app.ico
           UninstallDisplayIcon={app}\${{ env.APP_NAME }}.exe
 
           [Files]
           Source: "dist\onefolder\${{ env.APP_NAME }}\*"; DestDir: "{app}"; Flags: recursesubdirs
 
           [Icons]
-          Name: "{group}\${{ env.APP_NAME }}"; Filename: "{app}\${{ env.APP_NAME }}.exe"; IconFilename: "{app}\${{ env.APP_NAME }}.exe"
+          Name: "{group}\${{ env.APP_NAME }}"; Filename: "{app}\${{ env.APP_NAME }}.exe"
           Name: "{commondesktop}\${{ env.APP_NAME }}"; Filename: "{app}\${{ env.APP_NAME }}.exe"; Tasks: desktopicon
 
           [Tasks]
@@ -129,11 +172,19 @@ jobs:
 
       - name: Build installer
         shell: powershell
+        continue-on-error: true
         run: |
-          iscc installer.iss
+          if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+            & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          } elseif (Get-Command iscc -ErrorAction SilentlyContinue) {
+            iscc installer.iss
+          } else {
+            Write-Host "Inno Setup not found; skipping installer build."
+          }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: installer
           path: dist/installer/*.exe
